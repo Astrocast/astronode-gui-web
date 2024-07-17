@@ -11,3 +11,7 @@ It provides a browser-based graphical user interface to easily send messages usi
 The Web Astronode GUI requires a browser that supports the [Web Serial API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Serial_API).\
 Currently this API is only implemented by the desktop chromium-based browsers such as Chrome, Edge, Opera and others.\
 Notably, the tool does not work on Firefox and Safari.
+
+## How do I try it?
+
+Simply navigate to https://astrocast.github.io/astronode-gui-web/ to try it.
