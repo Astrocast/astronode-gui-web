@@ -482,6 +482,10 @@
             writeRequest(AstronodeRequest.WIF_WR, parameters);
         }
 
+        /** Sends command to Astronode to saves the current configuration in NVM. */
+        async function saveConfig() {
+            writeRequest(AstronodeRequest.CFG_SR);
+        }
 
         // Actions to perform on window load
         window.onload = function () {
@@ -660,10 +664,15 @@
             div#sectionWifi label {
                 grid-column: 1;
                 margin-left: 0.5em;
+                font-size: smaller;
             }
 
             div#sectionWifi input {
                 grid-column: 2;
+            }
+
+            div#sectionWifi div#sectionWifiButtons {
+                grid-column: span 2;
             }
 
         #logText {
@@ -729,7 +738,10 @@
             <label for="wifiSsid">SSID: </label><input id="wifiSsid" type="text" maxlength="32" />
             <label for="wifiPassword">Password: </label><input id="wifiPassword" type="password" maxlength="63" />
             <label for="wifiToken">Astrocast Token: </label><input id="wifiToken" type="password" maxlength="96" />
-            <button id="buttonSetWifi" onclick="setWifiConfig()">Set Wi-Fi config</button>
+            <div id="sectionWifiButtons">
+                <button id="buttonSetWifi" onclick="setWifiConfig()">Set Wi-Fi config</button>
+                <button id="buttonSaveConfig" onclick="saveConfig()" title="Save the current configuration into NVM.">Save config</button>
+            </div>
         </div>
         <hr />
         <div id="sectionLog"></div>
