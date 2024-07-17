@@ -1,0 +1,709 @@
+﻿<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Web Astronode GUI (prototype)</title>
+    <script>
+        /**
+         * Converts an Uint8Array to an hexadecimal string for display.
+         * @param {Uint8Array} bytes
+         */
+        function bytesToHex(bytes) {
+            return Array.from(bytes).map(x => x.toString(16).toUpperCase().padStart(2, '0')).join('-');
+        }
+
+        /**
+         * Adds a new line to the log.
+         * @param {string} line  The line to add, without end line characters.
+         */
+        function addLogLine(line) {
+            console.log(line);
+            let element = document.getElementById('logText');
+            // No new line before first line
+            if (element.value.length > 0) { element.value += '\n'; }
+            element.value += line;
+            element.scrollTop = element.scrollHeight;
+        }
+        function addLogError(message) {
+            // TODO: Color error messages
+            addLogLine('Error: ' + message);
+        }
+
+        // Log all errors to log as well.
+        window.onError = function (message, source, lineno, colno, error) {
+            addLogError(message);
+        }
+        window.onunhandledrejection = function (e) {
+            addLogError(e.reason);
+        }
+
+        /** Astronode request messages (asset to terminal), keyed by name (for conversion from name to value). */
+        const AstronodeRequest = {
+            CFG_WR: 0x05, // Write configuration, and store in RAM (not saved in NVM)
+            WIF_WR: 0x06, // Write Wi-Fi settings, and store in RAM (not saved in NVM) - Wi-Fi DK only
+            SSC_WR: 0x07, // Satellite Search Configuration Write Request. Stored in RAM (never saved in NVM)
+            CFG_SR: 0x10, // Save configuration in NVM request
+            CFG_FR: 0x11, // Factory reset configuration request
+            CFG_RR: 0x15, // Read configuration from RAM
+            RTC_RR: 0x17, // Real Time Clock read request
+            NCO_RR: 0x18, // Next Contact Opportunity read request
+            MGI_RR: 0x19, // Module GUID read request
+            MSN_RR: 0x1A, // Module Serial Number read request
+            MPN_RR: 0x1B, // Module Product Number read request
+            PLD_ER: 0x25, // Enqueue uplink payload in non-volatile memory
+            PLD_DR: 0x26, // Dequeue uplink payload from non-volatile memory
+            PLD_FR: 0x27, // Clear (Free) all queued payloads from non-volatile memory
+            GEO_WR: 0x35, // Write geolocation longitude and latitude, and store in non-volatile memory
+            SAK_RR: 0x45, // Read Acknowledgement
+            SAK_CR: 0x46, // Confirm to the module that the Acknowledgement was properly decoded and can be deleted by the module
+            CMD_RR: 0x47, // Read a command message
+            CMD_CR: 0x48, // Confirm to the module that the command was properly decoded and can be deleted by the module
+            RES_CR: 0x55, // Clear reset event
+            TTX_SR: 0x61, // Test Transmit Start Request
+            EVT_RR: 0x65, // Read the event register
+            CTX_SR: 0x66, // Context Save Request - recommended before cutting power
+            PER_RR: 0x67, // Performance Counter Read Request
+            PER_CR: 0x68, // Performance Counter Clear Request
+            MST_RR: 0x69, // Module State Read Request
+            LCD_RR: 0x6A, // Last Contact Details Read Request
+            END_RR: 0x6B, // Environment Details Read Request to evaluate RF environment
+        };
+
+        /** Astronode answer messages (terminal to asset), keyed by ID (for conversion from value to name). */
+        const AstronodeAnswer = {
+            0x85: 'CFG_WA', // Answer last configuration write operation
+            0x86: 'WIF_WA', // Answer last Wi-Fi settings write operation - Wi-Fi DK only
+            0x87: 'SSC_WA', // Answer last Satellite Search Configuration write operation
+            0x90: 'CFG_SA', // Answer last configuration save request
+            0x91: 'CFG_FA', // Answer last factory reset request
+            0x95: 'CFG_RA', // Answer last configuration read operation with values
+            0x97: 'RTC_RA', // Answer last RTC read request with module time
+            0x98: 'NCO_RA', // Answer with the time to the next contact opportunity
+            0x99: 'MGI_RA', // Answer last Module GUID read with GUID
+            0x9A: 'MSN_RA', // Answer last Module Serial Number read with Serial Number
+            0x9B: 'MPN_RA', // Answer last Module Product Number read with the Product Number
+            0xA5: 'PLD_EA', // Answer last uplink payload enqueue operation
+            0xA6: 'PLD_DA', // Answer last uplink payload dequeue operation
+            0xA7: 'PLD_FA', // Answer last free queued payloads operation
+            0xB5: 'GEO_WA', // Answer last geolocation write operation
+            0xC5: 'SAK_RA', // Answer with Acknowledgement information
+            0xC6: 'SAK_CA', // Answer last SAK_CR confirmation
+            0xC7: 'CMD_RA', // Answer last CMD_RR with command data
+            0xC8: 'CMD_CA', // Answer last CMD_CR
+            0xD5: 'RES_CA', // Answer the reset clear request
+            0xE1: 'TTX_SA', // Answer the Test Transmit Start Request
+            0xE5: 'EVT_RA', // Answer indicates which events are currently pending
+            0xE6: 'CTX_SA', // Answer confirming Context Save Request
+            0xE7: 'PER_RA', // Answer with Performance Counters in Type, Length, Value format
+            0xE8: 'PER_CA', // Answer confirming Performance Counter Clear Request
+            0xE9: 'MST_RA', // Answer with details of the current Module State
+            0xEA: 'LCD_RA', // Answer with details of the Last Contact
+            0xEB: 'END_RA', // Answer with details of the RF environment
+            0xFF: 'ERROR'   // Answer a request reporting an error
+        };
+
+        /** Error codes of an Error (0xFF) answer message, keyed by value (for conversion from value to name). */
+        const AstronodeErrorCode = {
+            0x0001: 'CRC_NOT_VALID'       , // COMM:   Discrepancy between provided CRC and expected CRC.
+            0x0011: 'LENGTH_NOT_VALID'    , // COMM:   Message exceeds the maximum length for a frame.
+            0x0121: 'OPCODE_NOT_VALID'    , // COMM:   Invalid Operation Code used.
+            0x0601: 'FORMAT_NOT_VALID'    , // WIF_ER: At least one of the fields (SSID, password, token) is not composed of exclusively printable standard ASCII characters (0x20 to 0x7E).
+            0x0611: 'FLASH_WRITING_FAILED', // WIF_ER: Failed to write the Wi-Fi settings (SSID, password, token) to the flash.
+            0x0701: 'PERIOD_INVALID'      , // SSC_ER: The Satellite Search Config period enumeration value is not valid.
+            0x2501: 'BUFFER_FULL'         , // PLD_ER: Failed to queue the payload because the sending queue is already full.
+            0x2511: 'DUPLICATE_ID'        , // PLD_ER: Failed to queue the payload because the Payload ID provided by the asset is already in use in the terminal queue.
+            0x2601: 'BUFFER_EMPTY'        , // PLD_DR: Failed to dequeue a payload from the buffer because the buffer is empty
+            0x3501: 'INVALID_POS'         , // GEO_WR: Failed to update the geolocation information. Latitude and longitude fields must in the range [-90,90] degrees and [-180,180] degrees, respectively.
+            0x4501: 'NO_ACK'              , // SAK_RR: No satellite acknowledgement available for any payload.
+            0x4601: 'NO_ACK_CLEAR'          // SAK_CR: No payload ack to clear, or it was already cleared.    
+        };
+
+        /**
+         * Computes the CRC-CCITT checksum of the provided bytes.
+         * @param {Uint8Array} bytes The bytes for which to compute the checksum.
+         */
+        function computeCrcCcitt(bytes) {
+            let crc = 0xFFFF;
+            bytes.forEach(b => {
+                let x = (crc >> 8) ^ b;
+                x ^= x >> 4;
+                crc = ((crc << 8) ^ (x << 12) ^ (x << 5) ^ (x)) & 0xFFFF;
+            });
+            return crc;
+        }
+
+
+        // The serial port to the Astronode.
+        let serialPort = null;
+        let serialPortReader = null;
+
+        async function connectAstronode() {
+            // Check if the Web Serial API is supported
+            if (navigator.serial) {
+                // Cancel reader and close existing port
+                if (serialPort) {
+                    await serialPortReader.cancel();
+                    serialPortReader.releaseLock();
+                    serialPortReader = null;
+                    serialPort.close();
+                    serialPort = null;
+                }
+
+                // Request a serial port from user and open it
+                serialPort = await navigator.serial.requestPort();
+                const portInfo = await serialPort.getInfo();
+                const vendorId = portInfo.usbVendorId.toString(16).padStart(4, '0');
+                const productId = portInfo.usbProductId.toString(16).padStart(4, '0');
+                addLogLine(`Connecting to serial port ${vendorId}:${productId}...`);
+                await serialPort.open({ baudRate: 9600 });
+                addLogLine(`Connected.`);
+
+                // Request Astronode configuration, GUID and serial number
+                await writeRequest(AstronodeRequest.CFG_RR);
+                await writeRequest(AstronodeRequest.MGI_RR);
+                await writeRequest(AstronodeRequest.MSN_RR);
+
+                // Read answers until serial port closed
+                serialPortReader = serialPort.readable.getReader();
+                while(true) {
+                    const { value, done } = await serialPortReader.read();
+                    console.log({ value, done });
+                    if (value)
+                        value.forEach(processByte);
+                    if (done)
+                        break;
+                };
+            }
+        }
+
+        /**
+         * Constructs, encodes and writes the specified Astronode request to the serial port.
+         * @param     {number} id          The id of the request.
+         * @param {Uint8Array} parameters  The parameters bytes of the request.
+         */
+        async function writeRequest(id, parameters) {
+            // Default parameters to empty array
+            if (!parameters) { parameters = new Uint8Array(0); }
+
+            // Create request bytes, set request ID and copy parameters
+            let request = new Uint8Array(1 + 2 + parameters.length);
+            request[0] = id;
+            request.set(parameters, 1);
+
+            // Compute CRC over ID and parameters and append it
+            let crc = computeCrcCcitt(request.subarray(0, request.length - 2));
+            request[request.length - 1] = (crc >> 8) & 0xFF;
+            request[request.length - 2] = crc & 0xFF;
+
+            // Convert request into hex string
+            let hexRequest = Array.from(request).map(x => x.toString(16).padStart(2, '0')).join('');
+            console.log(`HEX request: ${hexRequest}`);
+
+            // Convert string back into ASCII byte between STX and ETX characters
+            let encodedRequest = new Uint8Array(hexRequest.length + 2);
+            new TextEncoder().encodeInto(hexRequest, encodedRequest.subarray(1));
+            encodedRequest[0] = 0x02;
+            encodedRequest[encodedRequest.length - 1] = 0x03;
+
+            // Write encoded request on serial port to Astronode
+            let requestName = Object.keys(AstronodeRequest).find(k => AstronodeRequest[k] == id);
+            console.log(`Sent message: ${bytesToHex(request)} (${bytesToHex(encodedRequest) })`);
+            addLogLine(`-> ${bytesToHex(request)} (${requestName})`);
+            if (serialPort) {
+                writer = serialPort.writable.getWriter();
+                await writer.write(encodedRequest);
+                writer.releaseLock();
+                return true;
+            } else {
+                addLogError('No Astronode connected.');
+                return false;
+            }
+        }
+
+
+        // Persisted payload ID counter
+        let payloadId = 1;
+        // States for processByte()
+        let startReceived = false;
+        let receiveBuffer = [];
+        // States for Event register polling
+        let pollTimerId = 0;
+        let queuedMessage = false;
+
+        /**
+         * Processes the next received byte from the serial port to the Astronode.
+         * @param {number} b The byte to process.
+         */
+        function processByte(b) {
+            // Start byte, initialize message reception
+            if (b == 0x02) {
+                startReceived = true;
+                receiveBuffer.length = 0;
+            }
+            // Stop byte, process received message
+            else if (b == 0x03 && startReceived) {
+                // Process message
+                startReceived = false;
+
+                // Ensure message length at least enough for ID and CRC (3 bytes encoded as 6 ASCII characters)
+                if (receiveBuffer.length >= 6) {
+                    processRawMessage(new Uint8Array(receiveBuffer));
+                }
+                else {
+                    console.log(`Invalid message of only ${receiveBuffer.length} bytes received: ${bytesToHex(receiveBuffer)}`);
+                }
+            }
+            // Data byte between start and stop bytes, keep it
+            else if (startReceived) {
+                receiveBuffer.push(b);
+            }
+            // Discard bytes outside of start and stop
+        }
+
+        /**
+         * Processes the raw message received, before still with text encoding.
+         * @param {Uint8Array} rawMessage
+         */
+        function processRawMessage(rawMessage) {
+            function getHexDigitValue(c) { return c < 65 ? (c - 48) : (c - 65 + 10); }
+            function decodeByte(c1, c2) { return getHexDigitValue(c1) << 4 | getHexDigitValue(c2); }
+
+            console.log(`Received raw message: ${bytesToHex(rawMessage)}`);
+
+            // Decode message from ASCII hex digits
+            let messageBuffer = new Uint8Array(rawMessage.length / 2);
+            for (i = 0; i < rawMessage.length; i += 2) {
+                messageBuffer[i / 2] = decodeByte(rawMessage[i], rawMessage[i + 1]);
+            }
+
+            // HACK: Invert two CRC bytes to allow simpler CRC check with CRC as big-endian
+            const crc1 = messageBuffer[messageBuffer.length - 1];
+            const crc2 = messageBuffer[messageBuffer.length - 2];
+            messageBuffer[messageBuffer.length - 1] = crc2;
+            messageBuffer[messageBuffer.length - 2] = crc1;
+
+            // Verify CRC of message and process it if valid
+            const crc = computeCrcCcitt(messageBuffer);
+            if (crc == 0) {
+                processMessage(messageBuffer.subarray(0, messageBuffer.length - 2));
+            } else {
+                console.log('Failed CRC check.');
+            }
+        }
+
+        /**
+         * Processes the message received, without text encoding nor framing.
+         * @param {Uint8Array} message
+         */
+        function processMessage(message) {
+            let messageId = message[0];
+            let messageName = AstronodeAnswer[messageId];
+            let parameters = message.slice(1);
+            let parametersView = new DataView(parameters.buffer);
+
+            // Special case for errors, append error code to message name
+            if (messageName == 'ERROR') {
+                if (parameters.length >= 2) {
+                    let errorValue = parametersView.getUint16(0, true);
+                    let errorCode = AstronodeErrorCode[errorValue];
+                    console.log(`Error message: ${errorCode} (0x${errorValue.toString(16).toUpperCase()})`);
+                    messageName += ' ' + errorCode;
+                }
+            }
+            addLogLine(`<- ${bytesToHex(new Uint8Array(message.buffer))} (${messageName})`);
+
+            switch (messageName) {
+                case 'CFG_RA':
+                    {
+                        // Extract parameters from message
+                        let productId = parameters[0];
+                        let hardwareRevision = parameters[1];
+                        let firmwareVersion = `${parameters[2]}.${parameters[3]}.${parameters[4]}`;
+                        // Deduce product name from product ID
+                        let productName = 'Unknown';
+                        switch (productId) {
+                            case 3: productName = 'Commercial Satellite Astronode'; break;
+                            case 4: productName = 'Commercial Wi-Fi Dev Kit'; break;
+                        }
+                        // Update UI elements
+                        document.getElementById('infoName').innerText = productName;
+                        document.getElementById('infoFirmwareVersion').innerText = firmwareVersion;
+                        document.getElementById('infoHardwareRevision').innerText = hardwareRevision;
+                        document.getElementById('infoDeviceTypeId').innerText = productId;
+                        break;
+                    }
+                case 'MGI_RA':
+                    {
+                        // GUID is a 36 characters string
+                        if (parameters.length >= 36) {
+                            let guid = new TextDecoder().decode(parameters.subarray(0, 36));
+                            document.getElementById('infoGuid').innerText = guid;
+                        }
+                        break;
+                    }
+                case 'MSN_RA':
+                    {
+                        // Serial Number is a 16 characters string, may contain null-characters at then end
+                        if (parameters.length >= 16) {
+                            let serialNumber = new TextDecoder().decode(parameters.subarray(0, 16)).replace(/\0/g, '');
+                            document.getElementById('infoSerialNumber').innerText = serialNumber;
+                        }
+                        break;
+                    }
+                case 'PLD_EA':
+                    {
+                        // Message confirmed queued
+                        queuedMessage = true;
+
+                        // Clear acked LED
+                        document.getElementById('ledAcked').classList.remove('led-green');
+                        break;
+                    }
+                case 'EVT_RA':
+                    {
+                        if (parameters.length >= 1) {
+                            // Extract bits from event register
+                            let events = parameters[0];
+                            let satAck = (events & 0x01) != 0;
+                            let cmdAvailable = (events & 0x04) != 0;
+                            queuedMessage = (events & 0x08) != 0;
+
+                            // Set queued LED indicator based on message pending
+                            if (queuedMessage)
+                                document.getElementById('ledQueued').classList.add('led-green');
+                            else
+                                document.getElementById('ledQueued').classList.remove('led-green');
+
+                            // Issue read of satellite acknowledgement if any available
+                            if (satAck)
+                                writeRequest(AstronodeRequest.SAK_RR);
+                            // Issue read of command if any available
+                            if (cmdAvailable)
+                                writeRequest(AstronodeRequest.CMD_RR);
+                        }
+                        break;
+                    }
+                case 'SAK_RA':
+                    // Set acked LED
+                    document.getElementById('ledAcked').classList.add('led-green');
+
+                    // Clear acknowledgement
+                    writeRequest(AstronodeRequest.SAK_CR);
+                    break;
+            }
+        }
+
+
+        /** Poll Event register of Astronode when connected and with pending message. */
+        function pollEventRegister() {
+            if (serialPort && queuedMessage) {
+                writeRequest(AstronodeRequest.EVT_RR);
+            }
+        }
+
+
+        /** Enqueues a message with the current text as payload. */
+        async function enqueueMessage() {
+            let payloadValue = document.getElementById('inputMessage').value;
+
+            const payloadBytes = new TextEncoder().encode(payloadValue);
+            const parameters = new Uint8Array(2 + payloadBytes.length);
+            parameters[0] = payloadId & 0xFF;
+            parameters[1] = (payloadId >> 8) & 0xFF;
+            parameters.set(payloadBytes, 2);
+            if (await writeRequest(AstronodeRequest.PLD_ER, parameters)) {
+                queuedMessage = true;
+                payloadId++;
+            }
+        }
+
+        /** Dequeues the last message queued. */
+        async function dequeueMessage() {
+            await writeRequest(AstronodeRequest.PLD_DR);
+        }
+
+        /** Writes currently entered Wi-Fi configuration to Astronode. */
+        async function setWifiConfig() {
+            // Get values from UI elements
+            let wifiSsidValue = document.getElementById('wifiSsid').value;
+            let wifiPasswordValue = document.getElementById('wifiPassword').value;
+            let wifiTokenValue = document.getElementById('wifiToken').value;
+
+            // Encode Wi-Fi configuration string to bytes
+            let encoder = new TextEncoder();
+            const ssidBytes = encoder.encode(wifiSsidValue);
+            const passwordBytes = encoder.encode(wifiPasswordValue);
+            const tokenBytes = encoder.encode(wifiTokenValue);
+
+            // Validate their respective length constraints
+            if (ssidBytes.length > 32) {
+                addLogError('Wi-Fi SSID is longer than 32 bytes.');
+                return;
+            }
+            if (passwordBytes.length > 63) {
+                addLogError('Wi-Fi password is longer than 63 bytes.');
+                return;
+            }
+            if (tokenBytes.length != 96) {
+                addLogError('Astrocast token must be 96 bytes long.');
+                return;
+            }
+
+            // Construct parameters bytes by copying parameter at their respective offset
+            var parameters = new Uint8Array(194);
+            parameters.set(ssidBytes, 0);
+            parameters.set(passwordBytes, 33);
+            parameters.set(tokenBytes, 97);
+
+            writeRequest(AstronodeRequest.WIF_WR, parameters);
+        }
+
+
+        // Actions to perform on window load
+        window.onload = function () {
+            // Check if Web Serial API is supported
+            let serialSupported = Boolean(navigator.serial);
+            document.getElementById('buttonConnect').disabled = !serialSupported;
+            if (serialSupported)
+                document.getElementById('serialNotSupported').remove();
+
+            // Restore configuration from local storage
+            let storage = window.localStorage;
+            if (storage && storage.getItem) {
+                // Persisted payload ID
+                payloadId = parseInt(storage.getItem('payloadId'));
+                if (!payloadId) payloadId = 1;
+                // Last sent message
+                document.getElementById('inputMessage').value = storage.getItem('lastMessage');
+                // Wi-Fi configuration
+                document.getElementById('wifiSsid').value = storage.getItem('wifiSsid');
+                document.getElementById('wifiPassword').value = storage.getItem('wifiPassword');
+                document.getElementById('wifiToken').value = storage.getItem('wifiToken');
+            }
+
+            // EVT register 1s poll timer
+            pollTimerId = window.setInterval(pollEventRegister, 1000);
+        }
+
+        // Actions to perform on window unload
+        window.onunload = function () {
+            // Save configuration to local storage
+            let storage = window.localStorage;
+            if (storage && storage.setItem) {
+                // Persisted payload ID
+                storage.setItem('payloadId', payloadId);
+                // Last sent message
+                storage.setItem('lastMessage', document.getElementById('inputMessage').value);
+                // Wi-Fi configuration
+                // TODO: Secure password and token
+                storage.setItem('wifiSsid', document.getElementById('wifiSsid').value);
+                storage.setItem('wifiPassword', document.getElementById('wifiPassword').value);
+                storage.setItem('wifiToken', document.getElementById('wifiToken').value);
+            }
+        }
+    </script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif
+        }
+
+        div#content {
+            max-width: 500px;
+            min-width: 340px;
+            margin: 5px auto 5px auto;
+            padding: 10px;
+            border: 1px solid gray;
+            border-radius: 5px;
+            box-shadow: 0 4px 8px 0 rgba(0, 0, 0, 0.2), 0 6px 20px 0 rgba(0, 0, 0, 0.19);
+        }
+
+            div#content hr {
+                border-width: 0px;
+                border-top: 1px solid gray;
+                margin: 10px -10px 10px -10px;
+            }
+
+        div#sectionTitle {
+            text-align: center;
+            font-size: larger;
+            font-weight: bold;
+        }
+
+            div#sectionTitle #title {
+                font-size: larger;
+                font-weight: bold;
+            }
+
+            div#sectionTitle #subtitle {
+                font-size: x-small;
+                font-weight: bold;
+                color: #FF8041;
+                vertical-align: super;
+            }
+
+        #serialNotSupported {
+            color: red;
+            font-size: smaller;
+        }
+
+        div#sectionInfo {
+            display: grid;
+            grid-template-columns: max-content auto;
+            font-size: smaller;
+        }
+
+            div#sectionInfo label {
+                grid-column: 1;
+                margin-right: 0.5em;
+            }
+
+            div#sectionInfo span {
+                grid-column: 2;
+            }
+
+        div#sectionMessage {
+            display: grid;
+            grid-template-columns: 25% 25% 25% 25%;
+            font-size: smaller;
+        }
+
+            div#sectionMessage #inputMessage {
+                grid-row: 2;
+                grid-column: 1 / span 4;
+                height: 3.4em;
+                min-height: 1.2em;
+                resize: vertical;
+                font-family: inherit;
+                margin: 6px 0px;
+            }
+
+            div#sectionMessage button {
+                width: 40px;
+                margin: auto;
+            }
+
+            div#sectionMessage #buttonQueue {
+                grid-row: 3;
+                grid-column: 1;
+            }
+
+            div#sectionMessage #buttonDequeue {
+                grid-row: 3;
+                grid-column: 2;
+            }
+
+            div#sectionMessage #ledQueued {
+                grid-row: 3;
+                grid-column: 3;
+            }
+
+            div#sectionMessage #ledAcked {
+                grid-row: 3;
+                grid-column: 4;
+            }
+
+            div#sectionMessage .led {
+                margin: auto;
+                width: 16px;
+                height: 16px;
+                background-color: lightgray;
+                border-radius: 50%;
+                box-shadow: rgba(0, 0, 0, 0.2) 0 -1px 5px 1px, inset darkgray 0 -1px 6px, lightgray 0 2px 8px;
+            }
+
+            div#sectionMessage .led-green {
+                background-color: #ABFF00;
+                box-shadow: rgba(0, 0, 0, 0.2) 0 -1px 5px 1px, inset #304701 0 -1px 6px, #89FF00 0 2px 8px;
+            }
+
+        div#sectionWifi {
+            display: grid;
+            grid-template-columns: max-content auto;
+            grid-gap: 4px;
+        }
+
+            div#sectionWifi label {
+                grid-column: 1;
+                margin-left: 0.5em;
+            }
+
+            div#sectionWifi input {
+                grid-column: 2;
+            }
+
+        #logText {
+            width: 99%;
+            height: 100px;
+            white-space: pre;
+            overflow-wrap: normal;
+            overflow-x: scroll;
+            resize: vertical;
+            font-family: 'Cascadia Mono', Consolas, 'Fira Mono', 'Fira Code', Courier New, Courier, monospace;
+            font-size: 11px;
+        }
+
+        div#sectionFooter {
+            text-align: center;
+        }
+
+        div#sectionFooter svg {
+            width: 160px;
+        }
+
+    </style>
+</head>
+<body>
+    <div id="content">
+        <div id="sectionTitle">
+            <span id="title">Astronode GUI</span>
+            <span id="subtitle">prototype</span>
+        </div>
+        <hr />
+        <div id="sectionConnect">
+            <button id="buttonConnect" onclick="connectAstronode()">Connect Astronode</button>
+            <span id="serialNotSupported">Serial ports not supported in this browser</span>
+        </div>
+        <hr />
+        <div id="sectionInfo">
+            <label for="infoName">Device connected:</label>
+            <span id="infoName">n/a</span>
+            <label for="infoFirmwareVersion">Firmware version:</label>
+            <span id="infoFirmwareVersion">n/a</span>
+            <label for="infoHardwareRevision">Hardware revision:</label>
+            <span id="infoHardwareRevision">n/a</span>
+            <label for="infoDeviceTypeId">Device Type ID:</label>
+            <span id="infoDeviceTypeId">n/a</span>
+            <label for="infoGuid">Module GUID:</label>
+            <span id="infoGuid">n/a</span>
+            <label for="infoSerialNumber">Module Serial Number:</label>
+            <span id="infoSerialNumber">n/a</span>
+        </div>
+        <hr />
+        <div id="sectionMessage">
+            Enter your message:<br />
+            <textarea id="inputMessage" maxlength="160">Hello World!</textarea>
+            <button id="buttonQueue" type="button" title="Queue message" onclick="enqueueMessage()">&#x2709;</button>
+            <button id="buttonDequeue" type="button" title="Wipe last message in buffer" onclick="dequeueMessage()">&#x232B;</button>
+            <div class="led" id="ledQueued" title="Indicates if at least one message is queued"></div>
+            <div class="led" id="ledAcked" title="Indicates if ACK received for last message sent"></div>
+        </div>
+        <hr />
+        <div id="sectionWifi">
+            Wi-Fi:
+            <label for="wifiSsid">SSID: </label><input id="wifiSsid" type="text" maxlength="32" />
+            <label for="wifiPassword">Password: </label><input id="wifiPassword" type="password" maxlength="63" />
+            <label for="wifiToken">Astrocast Token: </label><input id="wifiToken" type="password" maxlength="96" />
+            <button id="buttonSetWifi" onclick="setWifiConfig()">Set Wi-Fi config</button>
+        </div>
+        <hr />
+        <div id="sectionLog"></div>
+        Log:<br />
+        <textarea id="logText" readonly></textarea>
+        <hr />
+        <div id="sectionFooter">
+            <svg id="Layer_1" data-name="Layer 1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1409.98 381.4"><defs><style>.cls-1{fill:#f28a55;}</style></defs><path class="cls-1" d="M1117.83,591.33c-9.36-8.73-15.41-27.25-15.41-47.19,0-19.79,5.69-37.68,14.86-46.68l1.69-1.67-.65-2.29A190.63,190.63,0,0,0,934.9,354.8h0c-105.13,0-190.68,85.52-190.7,190.66A190.7,190.7,0,0,0,934.84,736.2h0A191,191,0,0,0,1119,595.32l.63-2.34Zm-95.71,110.4a177.77,177.77,0,0,1-136,15.92c-94.93-26.91-150.26-126-123.36-220.95A178.93,178.93,0,0,1,934.89,366.56h0v0a178.9,178.9,0,0,1,171,126.28,82.32,82.32,0,0,0-15.24,51.33,81.14,81.14,0,0,0,15.85,52.06A177.78,177.78,0,0,1,1022.12,701.73Z" transform="translate(-249.88 -354.8)"/><g id="Groupe_7901" data-name="Groupe 7901"><path id="Tracé_6162" data-name="Tracé 6162" d="M353,625.85a128.57,128.57,0,0,1-1.6-21.82,53.15,53.15,0,0,1-47.73,25.61c-23.09,0-33.52-6.64-39.84-12.64a49.49,49.49,0,0,1-13.91-35.09,53.09,53.09,0,0,1,33.83-49.63c19.59-8.84,47.73-8.84,63.23-8.84a62.61,62.61,0,0,0-2.21-21.18A21.7,21.7,0,0,0,323.85,489a21.3,21.3,0,0,0-17.7,8.83,24.05,24.05,0,0,0-3.48,14.23H256.83a44.68,44.68,0,0,1,18-37.61,83.36,83.36,0,0,1,48.36-13c13.28,0,41.1,2.21,56.91,20.54a63.11,63.11,0,0,1,11.06,39.21l.31,64.18a192.83,192.83,0,0,0,3.8,40.46Zm-57.53-49.32a22,22,0,0,0,21.24,22.77h1.52a26.51,26.51,0,0,0,19.92-9.17c8.21-10.12,8.83-22.49,8.83-39.51C316.92,548,295.43,557.56,295.43,576.53Z" transform="translate(-249.88 -354.8)"/><path id="Tracé_6163" data-name="Tracé 6163" d="M465.5,579.69c.63,10.12,7,21.81,26.56,21.81,16.75,0,24.66-9.48,24.66-19,0-7.27-3.8-13-22.13-18l-29.09-7.9c-13-3.8-40.47-11.7-40.47-44.26,0-31,28.45-49.95,69.85-49.95,32.88,0,59.42,15.18,60.7,47.11H512.93c-1.26-17.67-15.48-19-22.75-19-12.65,0-22.13,6-22.13,15.8,0,10.75,7.9,13,21.81,16.76L518.63,531c29.09,7.9,42.67,22.76,42.67,44.57,0,27.5-23.71,55-73.34,55-20.55,0-40.14-4.43-54.69-19.6a45.63,45.63,0,0,1-11.7-31.31Z" transform="translate(-249.88 -354.8)"/><path id="Tracé_6164" data-name="Tracé 6164" d="M684.87,623.64a145,145,0,0,1-36.35,5.06c-47.11,0-47.11-29.71-47.11-43V498.16H570.75v-31h30.66V435.86l46.48-17.07v48.37h37.93v31H647.89v72.07c.32,14.55.32,23.71,21.18,23.71a119.23,119.23,0,0,0,15.8-.94Z" transform="translate(-249.88 -354.8)"/><path id="Tracé_6165" data-name="Tracé 6165" d="M714,505.4c0-7.58-1.27-30.67-2.22-39.83h44l.94,30.67c6-13.6,16.45-32.88,54.38-31v42.05c-47.42-4.43-50.27,19.91-50.27,39.83v78.69H714Z" transform="translate(-249.88 -354.8)"/></g><g id="Groupe_7902" data-name="Groupe 7902"><path id="Tracé_6166" data-name="Tracé 6166" d="M1157.56,524.07c-.64-5.69-2.53-29.4-20.55-29.4-22.13,0-24.67,33.51-24.67,50.9,0,8.83,1,37.3,11.7,49a16.17,16.17,0,0,0,12.65,5.37c5,0,19.6-2.2,21.49-30.66h46.16a60.51,60.51,0,0,1-20.55,47.11,65.81,65.81,0,0,1-45.52,14.85c-21.18,0-39.83-4.74-54.37-21.18a92.91,92.91,0,0,1-20.24-62.91c0-72.71,53.42-82.82,74.61-82.82,29.71,0,64.81,16.44,65.12,59.75Z" transform="translate(-249.88 -354.8)"/><path id="Tracé_6167" data-name="Tracé 6167" d="M1327,627.13a128.65,128.65,0,0,1-1.6-21.82,53.13,53.13,0,0,1-47.74,25.6c-23.07,0-33.51-6.63-39.83-12.64a49.49,49.49,0,0,1-13.91-35.09,53.12,53.12,0,0,1,33.82-49.63c19.6-8.83,47.74-8.83,63.23-8.83a62.61,62.61,0,0,0-2.2-21.18,21.68,21.68,0,0,0-20.88-13.28,21.28,21.28,0,0,0-17.66,8.83,24,24,0,0,0-3.49,14.23h-45.84a44.76,44.76,0,0,1,18-37.62,83.48,83.48,0,0,1,48.37-13c13.28,0,41.1,2.21,56.91,20.54a63.15,63.15,0,0,1,11.06,39.2l.31,64.18a192.83,192.83,0,0,0,3.8,40.46Zm-57.53-49.32a22,22,0,0,0,21.24,22.76h1.52a26.52,26.52,0,0,0,19.92-9.17c8.21-10.11,8.83-22.48,8.83-39.51-30-2.53-51.5,7-51.5,25.92Z" transform="translate(-249.88 -354.8)"/><path id="Tracé_6168" data-name="Tracé 6168" d="M1439.53,581c.62,10.11,7,21.81,26.56,21.81,16.75,0,24.65-9.48,24.65-19,0-7.28-3.79-13-22.12-18l-29.09-7.9c-13-3.8-40.47-11.7-40.47-44.27,0-31,28.46-49.94,69.85-49.94,32.88,0,59.42,15.17,60.7,47.09h-42.68c-1.26-17.66-15.48-19-22.75-19-12.65,0-22.14,6-22.14,15.8,0,10.74,7.91,13,21.82,16.75l28.77,7.91c29.08,7.9,42.67,22.75,42.67,44.58,0,27.5-23.71,55-73.34,55-20.55,0-40.14-4.43-54.69-19.6a45.63,45.63,0,0,1-11.7-31.31Z" transform="translate(-249.88 -354.8)"/><path id="Tracé_6169" data-name="Tracé 6169" d="M1658.91,624.91a144.64,144.64,0,0,1-36.36,5.06c-47.1,0-47.1-29.71-47.1-43V499.41h-30.66v-31h30.66V437.12l46.47-17.07v48.37h37.93v31h-37.93v72.08c.32,14.55.32,23.71,21.18,23.71a117.62,117.62,0,0,0,15.81-.95Z" transform="translate(-249.88 -354.8)"/></g><g id="Groupe_7905" data-name="Groupe 7905"><g id="Groupe_7903" data-name="Groupe 7903"><path id="Tracé_6170" data-name="Tracé 6170" d="M935.21,440.5a105,105,0,1,0,.13,0Zm0,170a65,65,0,1,1,65-64.91,65,65,0,0,1-65,64.91Z" transform="translate(-249.88 -354.8)"/></g><g id="Groupe_7904" data-name="Groupe 7904"><path id="Tracé_6171" data-name="Tracé 6171" d="M935.22,442.4a103.08,103.08,0,1,0,.13,0Zm0,166.88a63.79,63.79,0,1,1,63.83-63.74h0a63.83,63.83,0,0,1-63.83,63.74Z" transform="translate(-249.88 -354.8)"/></g></g><circle class="cls-1" cx="586.69" cy="34.09" r="29.5"/></svg>
+        </div>
+    </div>
+</body>
+</html>
