@@ -141,40 +141,63 @@
         async function connectAstronode() {
             // Check if the Web Serial API is supported
             if (navigator.serial) {
-                // Cancel reader and close existing port
-                if (serialPort) {
-                    await serialPortReader.cancel();
-                    serialPortReader.releaseLock();
-                    serialPortReader = null;
-                    serialPort.close();
-                    serialPort = null;
+                try {
+                    // Close existing port
+                    await disconnectAstronode();
+
+                    // Request a serial port from user and open it
+                    serialPort = await navigator.serial.requestPort();
+                    const portInfo = await serialPort.getInfo();
+                    const vendorId = portInfo.usbVendorId.toString(16).padStart(4, '0');
+                    const productId = portInfo.usbProductId.toString(16).padStart(4, '0');
+                    addLogLine(`Connecting to serial port ${vendorId}:${productId}...`);
+                    await serialPort.open({ baudRate: 9600 });
+                    addLogLine(`Connected.`);
+                    serialPort.ondisconnect = disconnectAstronode;
+                    updateElementsState();
+
+                    // Request Astronode configuration, GUID and serial number
+                    await writeRequest(AstronodeRequest.CFG_RR);
+                    await writeRequest(AstronodeRequest.MGI_RR);
+                    await writeRequest(AstronodeRequest.MSN_RR);
+
+                    // Read answers until serial port closed
+                    serialPortReader = serialPort.readable.getReader();
+                    while (true) {
+                        const { value, done } = await serialPortReader.read();
+                        console.log({ value, done });
+                        if (value)
+                            value.forEach(processByte);
+                        if (done)
+                            break;
+                    };
                 }
-
-                // Request a serial port from user and open it
-                serialPort = await navigator.serial.requestPort();
-                const portInfo = await serialPort.getInfo();
-                const vendorId = portInfo.usbVendorId.toString(16).padStart(4, '0');
-                const productId = portInfo.usbProductId.toString(16).padStart(4, '0');
-                addLogLine(`Connecting to serial port ${vendorId}:${productId}...`);
-                await serialPort.open({ baudRate: 9600 });
-                addLogLine(`Connected.`);
-
-                // Request Astronode configuration, GUID and serial number
-                await writeRequest(AstronodeRequest.CFG_RR);
-                await writeRequest(AstronodeRequest.MGI_RR);
-                await writeRequest(AstronodeRequest.MSN_RR);
-
-                // Read answers until serial port closed
-                serialPortReader = serialPort.readable.getReader();
-                while(true) {
-                    const { value, done } = await serialPortReader.read();
-                    console.log({ value, done });
-                    if (value)
-                        value.forEach(processByte);
-                    if (done)
-                        break;
-                };
+                catch (error) {
+                    addLogError(error);
+                }
+                await disconnectAstronode();
+                updateElementsState();
             }
+        }
+
+        // Cancels reader and closes existing serial port.
+        async function disconnectAstronode() {
+            if (serialPortReader) {
+                try {
+                await serialPortReader.cancel();
+                if (serialPortReader) // May have been nulled already asychronously during cancel
+                    serialPortReader.releaseLock();
+                } catch {}
+                serialPortReader = null;
+            }
+            if (serialPort) {
+                try {
+                if (serialPort.readable)
+                    serialPort.close();
+                } catch {}
+                serialPort = null;
+            }
+            updateElementsState();
         }
 
         /**
@@ -462,6 +485,8 @@
 
         // Actions to perform on window load
         window.onload = function () {
+            updateElementsState();
+
             // Check if Web Serial API is supported
             let serialSupported = Boolean(navigator.serial);
             document.getElementById('buttonConnect').disabled = !serialSupported;
@@ -472,14 +497,14 @@
             let storage = window.localStorage;
             if (storage && storage.getItem) {
                 // Persisted payload ID
-                payloadId = parseInt(storage.getItem('payloadId'));
+                payloadId = parseInt(storage.getItem('astronodegui-payloadId'));
                 if (!payloadId) payloadId = 1;
                 // Last sent message
-                document.getElementById('inputMessage').value = storage.getItem('lastMessage');
+                document.getElementById('inputMessage').value = storage.getItem('astronodegui-lastMessage');
                 // Wi-Fi configuration
-                document.getElementById('wifiSsid').value = storage.getItem('wifiSsid');
-                document.getElementById('wifiPassword').value = storage.getItem('wifiPassword');
-                document.getElementById('wifiToken').value = storage.getItem('wifiToken');
+                document.getElementById('wifiSsid').value = storage.getItem('astronodegui-wifiSsid');
+                document.getElementById('wifiPassword').value = storage.getItem('astronodegui-wifiPassword');
+                document.getElementById('wifiToken').value = storage.getItem('astronodegui-wifiToken');
             }
 
             // EVT register 1s poll timer
@@ -492,15 +517,24 @@
             let storage = window.localStorage;
             if (storage && storage.setItem) {
                 // Persisted payload ID
-                storage.setItem('payloadId', payloadId);
+                storage.setItem('astronodegui-payloadId', payloadId);
                 // Last sent message
-                storage.setItem('lastMessage', document.getElementById('inputMessage').value);
+                storage.setItem('astronodegui-lastMessage', document.getElementById('inputMessage').value);
                 // Wi-Fi configuration
                 // TODO: Secure password and token
-                storage.setItem('wifiSsid', document.getElementById('wifiSsid').value);
-                storage.setItem('wifiPassword', document.getElementById('wifiPassword').value);
-                storage.setItem('wifiToken', document.getElementById('wifiToken').value);
+                storage.setItem('astronodegui-wifiSsid', document.getElementById('wifiSsid').value);
+                storage.setItem('astronodegui-wifiPassword', document.getElementById('wifiPassword').value);
+                storage.setItem('astronodegui-wifiToken', document.getElementById('wifiToken').value);
             }
+        }
+
+        // Updates the state of the UI element based on the current connected state
+        function updateElementsState () {
+            const connected = serialPort && serialPort.readable;
+            const buttons = document.getElementsByTagName('button');
+            for (const button of buttons)
+                button.disabled = !connected;
+            document.getElementById('buttonConnect').disabled = connected;
         }
     </script>
     <style>
@@ -662,6 +696,7 @@
         <hr />
         <div id="sectionConnect">
             <button id="buttonConnect" onclick="connectAstronode()">Connect Astronode</button>
+            <button id="buttonDisconnect" onclick="disconnectAstronode()" disabled>Disconnect</button>
             <span id="serialNotSupported">Serial ports not supported in this browser</span>
         </div>
         <hr />
