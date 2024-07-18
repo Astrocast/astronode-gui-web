@@ -503,8 +503,10 @@
                 // Persisted payload ID
                 payloadId = parseInt(storage.getItem('astronodegui-payloadId'));
                 if (!payloadId) payloadId = 1;
-                // Last sent message
-                document.getElementById('inputMessage').value = storage.getItem('astronodegui-lastMessage');
+                // Last sent message (without overwriting default if none saved)
+                let lastMessage = storage.getItem('astronodegui-lastMessage');
+                if (lastMessage !== null)
+                    document.getElementById('inputMessage').value = lastMessage;
                 // Wi-Fi configuration
                 document.getElementById('wifiSsid').value = storage.getItem('astronodegui-wifiSsid');
                 document.getElementById('wifiPassword').value = storage.getItem('astronodegui-wifiPassword');
